@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"crypto/tls"
 	"log/slog"
 	"time"
 
@@ -21,6 +22,7 @@ type ShareQueue struct {
 	updatePeers  chan []ConfighubBuilder
 	localBuilder rpcclient.RPCClient
 	signer       *signature.Signer
+	cert         tls.Certificate // Really only one of signer and cert is necessary
 	// if > 0 share queue will spawn multiple senders per peer
 	workersPerPeer int
 }
@@ -129,7 +131,7 @@ func (sq *ShareQueue) Run() {
 				if info.OrderflowProxy.EcdsaPubkeyAddress == sq.signer.Address() {
 					continue
 				}
-				client, err := RPCClientWithCertAndSigner(OrderflowProxyURLFromIP(info.IP), []byte(info.OrderflowProxy.TLSCert), sq.signer, workersPerPeer)
+				client, err := RPCClientWithCertAndSigner(OrderflowProxyURLFromIP(info.IP), sq.cert, []byte(info.OrderflowProxy.TLSCert), sq.signer, workersPerPeer)
 				if err != nil {
 					sq.log.Error("Failed to create a peer client", slog.Any("error", err))
 					shareQueueInternalErrors.Inc()

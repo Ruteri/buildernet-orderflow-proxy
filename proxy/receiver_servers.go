@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"crypto/tls"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -64,7 +65,10 @@ func StartReceiverServers(proxy *ReceiverProxy, userListenAddress, systemListenA
 	}
 
 	certServer := &http.Server{
-		Addr:         certListenAddress,
+		Addr: certListenAddress,
+		TLSConfig: &tls.Config{
+			Certificates: []tls.Certificate{proxy.Certificate},
+		},
 		Handler:      proxy.CertHandler,
 		ReadTimeout:  HTTPDefaultReadTimeout,
 		WriteTimeout: HTTPDefaultWriteTimeout,

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/tls"
 	"log"
 	"net/http"
 	"net/http/pprof"
@@ -30,6 +31,16 @@ var flags []cli.Flag = []cli.Flag{
 		Value:   "http://127.0.0.1:14892",
 		Usage:   "address of the builder config hub endpoint (directly or using the cvm-proxy)",
 		EnvVars: []string{"BUILDER_CONFIGHUB_ENDPOINT"},
+	},
+	&cli.DurationFlag{
+		Name:    "cert-path",
+		Usage:   "path to the server certificate",
+		EnvVars: []string{"CERT_PATH"},
+	},
+	&cli.StringFlag{
+		Name:    "cert-key-path",
+		Usage:   "path to the server certificate key",
+		EnvVars: []string{"CERT_KEY_PATH"},
 	},
 	&cli.StringFlag{
 		Name:    "orderflow-signer-key",
@@ -126,9 +137,24 @@ func main() {
 
 			connectionsPerPeer := cCtx.Int("connections-per-peer")
 
+			cert, err := os.ReadFile(cCtx.String("cert-path"))
+			if err != nil {
+				return err
+			}
+			key, err := os.ReadFile(cCtx.String("cert-key-path"))
+			if err != nil {
+				return err
+			}
+
+			certificate, err := tls.X509KeyPair(cert, key)
+			if err != nil {
+				return err
+			}
+
 			proxyConfig := &proxy.SenderProxyConfig{
 				SenderProxyConstantConfig: proxy.SenderProxyConstantConfig{
 					Log:             log,
+					Cert:            certificate,
 					OrderflowSigner: orderflowSigner,
 				},
 				BuilderConfigHubEndpoint: builderConfigHubEndpoint,

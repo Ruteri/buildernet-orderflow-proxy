@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"crypto/tls"
 	"log/slog"
 	"net/http"
 	"time"
@@ -13,6 +14,7 @@ import (
 
 type SenderProxyConstantConfig struct {
 	Log             *slog.Logger
+	Cert            tls.Certificate
 	OrderflowSigner *signature.Signer
 }
 
@@ -72,6 +74,7 @@ func NewSenderProxy(config SenderProxyConfig) (*SenderProxy, error) {
 		updatePeers:    prx.updatePeers,
 		localBuilder:   nil,
 		signer:         prx.OrderflowSigner,
+		cert:           prx.Cert,
 		workersPerPeer: config.ConnectionsPerPeer,
 	}
 	go queue.Run()

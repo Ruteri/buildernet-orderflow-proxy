@@ -25,6 +25,7 @@ const (
 	flagCertListenAddr   = "cert-listen-addr"
 	flagMaxUserRPS       = "max-user-requests-per-second"
 
+	flagCACertPath  = "cacert-path"
 	flagCertPath    = "cert-path"
 	flagCertKeyPath = "cert-key-path"
 )
@@ -62,12 +63,6 @@ var flags = []cli.Flag{
 		Value:   "http://127.0.0.1:8545",
 		Usage:   "address of the node RPC that supports eth_blockNumber",
 		EnvVars: []string{"RPC_ENDPOINT"},
-	},
-	&cli.StringFlag{
-		Name:    "builder-confighub-endpoint",
-		Value:   "http://127.0.0.1:14892",
-		Usage:   "address of the builder config hub endpoint (directly or using the cvm-proxy)",
-		EnvVars: []string{"BUILDER_CONFIGHUB_ENDPOINT"},
 	},
 	&cli.StringFlag{
 		Name:    "orderflow-archive-endpoint",
@@ -116,13 +111,18 @@ var flags = []cli.Flag{
 		EnvVars: []string{"CERT_HOSTS"},
 	},
 	&cli.DurationFlag{
+		Name:    flagCACertPath,
+		Usage:   "path where to ca certificate for authorization of peers",
+		EnvVars: []string{"CACERT_PATH"},
+	},
+	&cli.DurationFlag{
 		Name:    flagCertPath,
-		Usage:   "path where to store the generated certificate",
+		Usage:   "path to the server certificate",
 		EnvVars: []string{"CERT_PATH"},
 	},
 	&cli.StringFlag{
 		Name:    flagCertKeyPath,
-		Usage:   "path where to store the generated certificate key",
+		Usage:   "path to the server certificate key",
 		EnvVars: []string{"CERT_KEY_PATH"},
 	},
 
@@ -231,7 +231,6 @@ func runMain(cCtx *cli.Context) error {
 	builderEndpoint := cCtx.String("builder-endpoint")
 	rpcEndpoint := cCtx.String("rpc-endpoint")
 
-	builderConfigHubEndpoint := cCtx.String("builder-confighub-endpoint")
 	archiveEndpoint := cCtx.String("orderflow-archive-endpoint")
 	flashbotsSignerStr := cCtx.String("flashbots-orderflow-signer-address")
 	flashbotsSignerAddress := eth.HexToAddress(flashbotsSignerStr)
@@ -241,20 +240,21 @@ func runMain(cCtx *cli.Context) error {
 	maxUserRPS := cCtx.Int(flagMaxUserRPS)
 
 	certDuration := cCtx.Duration("cert-duration")
+	caCertPath := cCtx.String(flagCACertPath)
 	certHosts := cCtx.StringSlice("cert-hosts")
 	certPath := cCtx.String(flagCertPath)
 	certKeyPath := cCtx.String(flagCertKeyPath)
-	if certPath == "" || certKeyPath == "" {
-		return errors.New("cert-path and cert-key-path must be set")
+	if certPath == "" || certKeyPath == "" || caCertPath == "" {
+		return errors.New("cacert-path, cert-path and cert-key-path must be set")
 	}
 
 	proxyConfig := &proxy.ReceiverProxyConfig{
 		ReceiverProxyConstantConfig: proxy.ReceiverProxyConstantConfig{Log: log, FlashbotsSignerAddress: flashbotsSignerAddress},
 		CertValidDuration:           certDuration,
 		CertHosts:                   certHosts,
+		CACertPath:                  caCertPath,
 		CertPath:                    certPath,
 		CertKeyPath:                 certKeyPath,
-		BuilderConfigHubEndpoint:    builderConfigHubEndpoint,
 		ArchiveEndpoint:             archiveEndpoint,
 		ArchiveConnections:          connectionsPerPeer,
 		LocalBuilderEndpoint:        builderEndpoint,

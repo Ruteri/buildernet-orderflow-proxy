@@ -3,15 +3,19 @@ package proxy
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/flashbots/go-utils/rpcclient"
 	"github.com/flashbots/go-utils/signature"
-	utils_tls "github.com/flashbots/go-utils/tls"
 	"github.com/google/uuid"
 	"github.com/hashicorp/golang-lru/v2/expirable"
 	"golang.org/x/time/rate"
@@ -37,9 +41,8 @@ type replacementNonceKey struct {
 type ReceiverProxy struct {
 	ReceiverProxyConstantConfig
 
-	ConfigHub *BuilderConfigHub
-
 	OrderflowSigner *signature.Signer
+	ClientCAs       *x509.CertPool
 	PublicCertPEM   []byte
 	Certificate     tls.Certificate
 
@@ -79,13 +82,13 @@ type ReceiverProxyConfig struct {
 
 	CertValidDuration time.Duration
 	CertHosts         []string
+	CACertPath        string
 	CertPath          string
 	CertKeyPath       string
 
-	BuilderConfigHubEndpoint string
-	ArchiveEndpoint          string
-	ArchiveConnections       int
-	LocalBuilderEndpoint     string
+	ArchiveEndpoint      string
+	ArchiveConnections   int
+	LocalBuilderEndpoint string
 
 	// EthRPC should support eth_blockNumber API
 	EthRPC string
@@ -102,7 +105,16 @@ func NewReceiverProxy(config ReceiverProxyConfig) (*ReceiverProxy, error) {
 		return nil, err
 	}
 
-	cert, key, err := utils_tls.GetOrGenerateTLS(config.CertPath, config.CertKeyPath, config.CertValidDuration, config.CertHosts)
+	caCertPool := x509.NewCertPool()
+	if ok := caCertPool.AppendCertsFromPEM([]byte(config.CACertPath)); !ok {
+		return nil, errors.New("could not parse cacert")
+	}
+
+	cert, err := os.ReadFile(config.CertPath)
+	if err != nil {
+		return nil, err
+	}
+	key, err := os.ReadFile(config.CertKeyPath)
 	if err != nil {
 		return nil, err
 	}
@@ -121,8 +133,8 @@ func NewReceiverProxy(config ReceiverProxyConfig) (*ReceiverProxy, error) {
 	userAPIRateLimiter := rate.NewLimiter(limit, config.MaxUserRPS)
 	prx := &ReceiverProxy{
 		ReceiverProxyConstantConfig: config.ReceiverProxyConstantConfig,
-		ConfigHub:                   NewBuilderConfigHub(config.Log, config.BuilderConfigHubEndpoint),
 		OrderflowSigner:             orderflowSigner,
+		ClientCAs:                   caCertPool,
 		PublicCertPEM:               cert,
 		Certificate:                 certificate,
 		localBuilder:                localBuilder,
@@ -147,9 +159,22 @@ func NewReceiverProxy(config ReceiverProxyConfig) (*ReceiverProxy, error) {
 	}
 	prx.UserHandler = userHandler
 
+	metadata := ConfighubBuilder{
+		Name: prx.OrderflowSigner.Address().String(),
+		IP:   "",
+		OrderflowProxy: ConfighubOrderflowProxyCredentials{
+			TLSCert:            string(prx.PublicCertPEM),
+			EcdsaPubkeyAddress: prx.OrderflowSigner.Address(),
+		},
+	}
+	metadataJson, err := json.Marshal(metadata)
+	if err != nil {
+		return nil, err
+	}
+
 	prx.CertHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Add("Content-Type", "application/octet-stream")
-		_, err := w.Write(prx.PublicCertPEM)
+		_, err := w.Write(metadataJson)
 		if err != nil {
 			prx.Log.Warn("Failed to serve certificate", slog.Any("error", err))
 		}
@@ -221,47 +246,71 @@ func (prx *ReceiverProxy) Stop() {
 
 func (prx *ReceiverProxy) TLSConfig() *tls.Config {
 	return &tls.Config{
-		Certificates: []tls.Certificate{prx.Certificate},
-		MinVersion:   tls.VersionTLS13,
+		Certificates:       []tls.Certificate{prx.Certificate},
+		MinVersion:         tls.VersionTLS13,
+		ClientAuth:         tls.RequireAndVerifyClientCert,
+		ClientCAs:          prx.ClientCAs,
+		InsecureSkipVerify: true,
 	}
 }
 
 func (prx *ReceiverProxy) RegisterSecrets(ctx context.Context) error {
-	const maxRetries = 10
-	const timeBetweenRetries = time.Second * 10
+	// TODO: should refresh CA and resign certificate
+	return nil
+}
 
-	retry := 0
-	for {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		err := prx.ConfigHub.RegisterCredentials(ctx, ConfighubOrderflowProxyCredentials{
-			TLSCert:            string(prx.PublicCertPEM),
-			EcdsaPubkeyAddress: prx.OrderflowSigner.Address(),
-		})
-		if err == nil {
-			prx.Log.Info("Credentials registered on config hub")
-			return nil
-		}
+func resolveDomainIPs(domain string) ([]string, error) {
+	return []string{domain}, errors.New("not implemented")
+}
 
-		retry += 1
-		if retry >= maxRetries {
-			return err
-		}
-		prx.Log.Error("Fail to register credentials", slog.Any("error", err))
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(timeBetweenRetries):
-		}
+func fetchBuilderMetadata(clientCAs *x509.CertPool, ip string) (ConfighubBuilder, error) {
+	client := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				ClientCAs:  clientCAs,
+				MinVersion: tls.VersionTLS12,
+			},
+		},
 	}
+
+	resp, err := client.Get(fmt.Sprintf("https://%s:14727/"))
+	if err != nil {
+		return ConfighubBuilder{}, err
+	}
+
+	defer resp.Body.Close()
+
+	var builder ConfighubBuilder
+	err = json.NewDecoder(resp.Body).Decode(&builder)
+	if err != nil {
+		return ConfighubBuilder{}, err
+	}
+
+	builder.IP = ip
+	return builder, nil
 }
 
 // RequestNewPeers updates currently available peers from the builder config hub
 func (prx *ReceiverProxy) RequestNewPeers() error {
-	builders, err := prx.ConfigHub.Builders(false)
-	if err != nil {
-		return err
+	var builders []ConfighubBuilder
+
+	for _, dns := range []string{"somedns.domain"} {
+		ips, err := resolveDomainIPs(dns)
+		if err != nil {
+			// debug log
+			continue
+		}
+
+		for _, ip := range ips {
+			// TODO: skip already known
+			builder, err := fetchBuilderMetadata(prx.ClientCAs, ip)
+			if err != nil {
+				// debug log
+				continue
+			}
+
+			builders = append(builders, builder)
+		}
 	}
 
 	prx.peersMu.Lock()

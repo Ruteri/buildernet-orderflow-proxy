@@ -47,7 +47,7 @@ func HTTPClientWithMaxConnections(maxOpenConnections int) *http.Client {
 }
 
 //nolint:ireturn
-func RPCClientWithCertAndSigner(endpoint string, certPEM []byte, signer *signature.Signer, maxOpenConnections int) (rpcclient.RPCClient, error) {
+func RPCClientWithCertAndSigner(endpoint string, certificate tls.Certificate, certPEM []byte, signer *signature.Signer, maxOpenConnections int) (rpcclient.RPCClient, error) {
 	transport, err := createTransportForSelfSignedCert(certPEM)
 	if err != nil {
 		return nil, err
@@ -55,6 +55,8 @@ func RPCClientWithCertAndSigner(endpoint string, certPEM []byte, signer *signatu
 	transport.MaxIdleConns = maxOpenConnections
 	transport.MaxIdleConnsPerHost = maxOpenConnections
 	transport.WriteBufferSize = DefaultHTTPCLientWriteBuffer
+
+	transport.TLSClientConfig.Certificates = []tls.Certificate{certificate}
 
 	client := rpcclient.NewClientWithOpts(endpoint, &rpcclient.RPCClientOpts{
 		HTTPClient: &http.Client{
