@@ -18,6 +18,7 @@ import (
 	"github.com/flashbots/go-utils/signature"
 	"github.com/google/uuid"
 	"github.com/hashicorp/golang-lru/v2/expirable"
+	"github.com/miekg/dns"
 	"golang.org/x/time/rate"
 )
 
@@ -260,10 +261,32 @@ func (prx *ReceiverProxy) RegisterSecrets(ctx context.Context) error {
 }
 
 func resolveDomainIPs(domain string) ([]string, error) {
-	return []string{domain}, errors.New("not implemented")
+	m1 := new(dns.Msg)
+	m1.Id = dns.Id()
+	m1.RecursionDesired = true
+	m1.Question = make([]dns.Question, 1)
+	m1.Question[0] = dns.Question{domain, dns.TypeSRV, dns.ClassINET}
+
+	c := new(dns.Client)
+	in, _, err := c.Exchange(m1, "127.0.0.53:53")
+
+	if err != nil {
+		return nil, err
+	}
+
+	targets := make([]string, 0, len(in.Answer))
+
+	// Parse SRV records from the answer
+	for _, answer := range in.Answer {
+		if srv, ok := answer.(*dns.SRV); ok {
+			targets = append(targets, srv.Target) // Note: ignoring srv.Port here! We are using predefined ports for now
+		}
+	}
+
+	return targets, nil
 }
 
-func fetchBuilderMetadata(clientCAs *x509.CertPool, ip string) (ConfighubBuilder, error) {
+func fetchBuilderMetadata(clientCAs *x509.CertPool, target string) (ConfighubBuilder, error) {
 	client := &http.Client{
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
@@ -273,7 +296,7 @@ func fetchBuilderMetadata(clientCAs *x509.CertPool, ip string) (ConfighubBuilder
 		},
 	}
 
-	resp, err := client.Get(fmt.Sprintf("https://%s:14727/"))
+	resp, err := client.Get(fmt.Sprintf("https://%s:14727/", target))
 	if err != nil {
 		return ConfighubBuilder{}, err
 	}
@@ -286,7 +309,7 @@ func fetchBuilderMetadata(clientCAs *x509.CertPool, ip string) (ConfighubBuilder
 		return ConfighubBuilder{}, err
 	}
 
-	builder.IP = ip
+	builder.IP = target
 	return builder, nil
 }
 
